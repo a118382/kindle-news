@@ -125,7 +125,7 @@ jobs:
                  --password "$secret" \
                  --relay "$relay" \
                  --port "$port" \
-                 ${encrypt:+--encryption "$encrypt"} \
+                 ${encrypt:+--encryption "${encrypt^^}"} \
                  --subject "$base" \
                  --attachment "$PWD/$f" \
                  "$from" "$to" "$base"; then
