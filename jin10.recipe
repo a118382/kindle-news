@@ -1,12 +1,17 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-金十数据 - Telegram 频道 (jin10data) 快讯
-源: https://my-tg-rss.ask-linsh.workers.dev/jin10data  (Telegram -> RSS worker, 用户自建)
-特点: 几分钟一条, description 里正文会重复两次(纯文本段 + <b>完整段),
-      带 telegram emoji 外链图片、<i class="emoji">、末尾 t.me 链接。
-排版: 每条快讯做成一章, 标题用北京时间 HH:MM:SS; 正文清理重复/去 emoji/去 t.me 链接。
+金十数据 Telegram 频道 (jin10data) 快讯
+源: https://my-tg-rss.ask-linsh.workers.dev/jin10data
+
+处理要点:
+  1. 时间窗口去重: 只取过去 oldest_article 天 (默认1天) 的快讯。
+     每天北京 06:00 跑 → 取 昨天06:00~今天06:00, 已发过的不重复出现。
+  2. 去掉「金十数据X月X日讯」前缀及残留「金十数据」四字 (书名 + 正文)。
+  3. 兜底去重: 源偶尔把一条消息拆成「截断纯文本 + <b>完整段」,
+     取最后一次出现的完整段, 避免正文重复两遍。
 """
+import re
 from calibre.web.feeds.recipes import BasicNewsRecipe
 from calibre.ebooks.BeautifulSoup import BeautifulSoup
 from datetime import datetime, timezone, timedelta
@@ -15,33 +20,46 @@ CST = timezone(timedelta(hours=8))
 
 
 class Jin10Data(BasicNewsRecipe):
-    title = '金十数据'
+    title = '财经快讯'
     __author__ = 'lili'
     description = '金十数据 Telegram 频道快讯（几分钟一条）'
     language = 'zh'
     encoding = 'utf-8'
 
-    # 金十一天数百条, 取最近 N 条即可 (想看全天就调大)
-    max_articles_per_feed = 80
+    oldest_article = 1            # 时间窗口去重: 只取过去24小时
+    max_articles_per_feed = 300  # 一天数百条, 放宽上限避免截断
     no_stylesheets = True
     remove_javascript = True
     remove_empty_feeds = True
     resolve_internal_links = True
 
-    feeds = [('金十数据', 'https://my-tg-rss.ask-linsh.workers.dev/jin10data')]
+    feeds = [('财经快讯', 'https://my-tg-rss.ask-linsh.workers.dev/jin10data')]
 
     # ---------- 正文清理 ----------
+    @staticmethod
+    def _strip_prefix(text):
+        # 去重: 「金十数据X月X日讯」出现多次 → 截断段+完整段拼接, 取最后一次起的完整段
+        prefixes = list(re.finditer(r'金十数据\s*\d{1,2}月\d{1,2}日?\s*讯', text))
+        if len(prefixes) >= 2:
+            text = text[prefixes[-1].start():]
+        # 去掉前缀及残留「金十数据」四字
+        text = re.sub(r'金十数据\s*\d{1,2}月\d{1,2}日?\s*讯\s*[:：,]?', '', text)
+        text = re.sub(r'金十数据', '', text)
+        return text.strip()
+
     def _clean(self, html):
-        # 源(Telegram RSS 修复版)返回的 description 已是干净纯文本快讯,
-        # 这里只做兜底清理并包成段落。
         soup = BeautifulSoup(html or '')
-        for tag in soup.find_all(['img', 'a']):
+        for tag in soup.find_all(['img', 'a', 'i']):
             tag.decompose()
-        return '<p>' + soup.get_text(' ', strip=True) + '</p>'
+        text = soup.get_text(' ', strip=True)
+        text = self._strip_prefix(text)
+        text = re.sub(r'\s{2,}', ' ', text).strip()
+        return '<p>' + text + '</p>' if text else '<p></p>'
 
     # ---------- 抓取并组织 ----------
     def parse_index(self):
         from calibre.web.feeds.feedparser import parse as feedparser_parse
+        now = datetime.now(timezone.utc)
         articles = []
         for feed_title, url in self.feeds:
             try:
@@ -51,10 +69,8 @@ class Jin10Data(BasicNewsRecipe):
                 continue
             d = feedparser_parse(raw)
             entries = []
-            for e in d.entries[:self.max_articles_per_feed]:
-                # 跳过频道封面主页 item(若存在): 其特征为标题含 "Telegram"
-                # 或 description 含 Telegram 网页特有的 tgme_page 标记。
-                # 注意: 本源所有快讯的 <link> 都是频道根 URL, 不能据此跳过。
+            for e in d.entries:
+                # 跳过频道封面主页 item (t.me/s 频道介绍页)
                 _title = e.get('title', '') or ''
                 _raw = ''
                 if e.get('content'):
@@ -64,8 +80,13 @@ class Jin10Data(BasicNewsRecipe):
                 if ('Telegram' in _title) or ('tgme_page' in _raw):
                     continue
                 pub = e.get('published_parsed') or e.get('updated_parsed')
+                # 时间窗口去重: 超过 oldest_article 天的跳过
                 if pub:
-                    dt = datetime(*pub[:6], tzinfo=timezone.utc).astimezone(CST)
+                    pdt = datetime(*pub[:6], tzinfo=timezone.utc)
+                    age = (now - pdt).total_seconds() / 86400
+                    if age > self.oldest_article:
+                        continue
+                    dt = pdt.astimezone(CST)
                     time_str = dt.strftime('%H:%M:%S')
                 else:
                     time_str = '??:??:??'
