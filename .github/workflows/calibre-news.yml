@@ -7,9 +7,9 @@ on:
         description: '输出格式（Kindle 原生只认 azw3 / mobi / pdf / txt）'
         required: false
         default: 'azw3'
-  schedule:
-    # 北京时间每天早上 6:00 = UTC 前一天 22:00
-    - cron: '0 22 * * *'
+  # 定时已停用（书籍堆积 + 金十已改由 n8n 直推）。需要时手动 Run workflow。
+  # schedule:
+  #   - cron: '0 22 * * *'   # 北京 06:00
 
 permissions:
   contents: write
