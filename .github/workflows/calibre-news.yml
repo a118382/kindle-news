@@ -41,7 +41,10 @@ jobs:
               [ -z "$r" ] && continue
               case "$r" in \#*) continue ;; esac
               title="${r%.recipe}"
-              if ebook-convert --list-recipes 2>/dev/null | grep -qx "$title"; then
+              # --list-recipes 输出可能带前导空格，做去空白后的不区分大小写匹配
+              flat=$(printf '%s' "$title" | tr -d '[:space:]' | tr 'A-Z' 'a-z')
+              if ebook-convert --list-recipes 2>/dev/null |
+                   tr -d '[:space:]' | tr 'A-Z' 'a-z' | grep -qF "$flat"; then
                 [ "${r##*.}" = "recipe" ] || r="$r.recipe"
                 echo "$r" >> temp_recipe_list.txt
               else
