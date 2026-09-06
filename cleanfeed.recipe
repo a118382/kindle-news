@@ -22,15 +22,15 @@ class CleanFeed(BasicNewsRecipe):
     language = 'zh'
     encoding = 'utf-8'
 
-    # n8n 已按小时窗口过滤，这里用天数再兜一层底
-    oldest_article = 1
+    # n8n 已按小时窗口过滤，这里放宽到 2 天兜底，避免时区偏差误杀
+    oldest_article = 2
     max_articles_per_feed = 300
 
     use_embedded_content = True   # 见文件头说明，不要关
     remove_empty_feeds = True
+    # 注意：不要开 ignore_duplicate_articles 的 url 判重 —— 本源各条目 link 同源
     no_stylesheets = True
     remove_javascript = True
-    ignore_duplicate_articles = {'title', 'url'}
 
     feeds = [
         ('财经快讯', 'https://n8n.nbhub.xyz/webhook/jin10'),
