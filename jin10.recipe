@@ -4,19 +4,24 @@
 金十数据 Telegram 频道 (jin10data) 快讯
 源: https://my-tg-rss.ask-linsh.workers.dev/jin10data
 
-处理要点:
-  1. 时间窗口去重: 只取过去 oldest_article 天 (默认1天) 的快讯。
-     每天北京 06:00 跑 → 取 昨天06:00~今天06:00, 已发过的不重复出现。
-  2. 去掉「金十数据X月X日讯」前缀及残留「金十数据」四字 (书名 + 正文)。
-  3. 兜底去重: 源偶尔把一条消息拆成「截断纯文本 + <b>完整段」,
-     取最后一次出现的完整段, 避免正文重复两遍。
+源格式不稳定 (取决于请求 UA):
+  - 有时返回标准 RSS (多条独立 <item>, 干净快讯)
+  - 有时返回整页 HTML (t.me/s 频道页, 所有快讯挤在 1 条里, 带「金十数据」前缀)
+本 recipe 双路径兼容, 且统一做两件事:
+  1. 时间窗口去重: 只取过去 oldest_article 天 (默认1天)。
+     每天北京 06:00 跑 → 取 昨天06:00~今天06:00, 已发过的不重复。
+  2. 去掉「金十数据X月X日讯」前缀及残留「金十数据」四字 (书名已改为「财经快讯」)。
 """
 import re
+import urllib.request
 from calibre.web.feeds.recipes import BasicNewsRecipe
 from calibre.ebooks.BeautifulSoup import BeautifulSoup
 from datetime import datetime, timezone, timedelta
 
 CST = timezone(timedelta(hours=8))
+# 用浏览器 UA, 让 worker 返回标准 RSS 而非整页 HTML
+UA = ('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
+      '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
 
 
 class Jin10Data(BasicNewsRecipe):
@@ -56,6 +61,38 @@ class Jin10Data(BasicNewsRecipe):
         text = re.sub(r'\s{2,}', ' ', text).strip()
         return '<p>' + text + '</p>' if text else '<p></p>'
 
+    # ---------- 抓取 ----------
+    def _fetch(self, url):
+        req = urllib.request.Request(url, headers={'User-Agent': UA})
+        return urllib.request.urlopen(req, timeout=30).read()
+
+    def _parse_html(self, raw):
+        """整页 HTML 兜底: 提取每条快讯, 去「金十数据」前缀和 views/时间尾巴。"""
+        soup = BeautifulSoup(raw)
+        nodes = soup.select('.tgme_widget_message, article, [class*="message"]')
+        out = []
+        if nodes:
+            for n in nodes:
+                t = n.find('time')
+                ts = ''
+                if t:
+                    ts = t.get('datetime') or t.get_text(strip=True)
+                body = n.get_text(' ', strip=True)
+                body = re.sub(r'\d+\s*views?', '', body)
+                body = self._strip_prefix(body)
+                body = re.sub(r'\s{2,}', ' ', body).strip()
+                if body:
+                    out.append((ts, body))
+        else:
+            text = soup.get_text('\n', strip=True)
+            for seg in re.split(r'金十数据', text):
+                seg = re.sub(r'\d+\s*views?', '', seg)
+                seg = self._strip_prefix(seg)
+                seg = re.sub(r'\s{2,}', ' ', seg).strip()
+                if len(seg) > 10:
+                    out.append(('', seg))
+        return out
+
     # ---------- 抓取并组织 ----------
     def parse_index(self):
         from calibre.web.feeds.feedparser import parse as feedparser_parse
@@ -63,45 +100,62 @@ class Jin10Data(BasicNewsRecipe):
         articles = []
         for feed_title, url in self.feeds:
             try:
-                raw = self.browser.open(url).read()
+                raw = self._fetch(url)
             except Exception as e:
                 self.log.warn('抓取失败: %s' % e)
                 continue
-            d = feedparser_parse(raw)
-            entries = []
-            for e in d.entries:
-                # 跳过频道封面主页 item (t.me/s 频道介绍页)
-                _title = e.get('title', '') or ''
-                _raw = ''
-                if e.get('content'):
-                    _raw = e['content'][0].get('value', '') or ''
-                elif e.get('description'):
-                    _raw = e['description']
-                if ('Telegram' in _title) or ('tgme_page' in _raw):
-                    continue
-                pub = e.get('published_parsed') or e.get('updated_parsed')
-                # 时间窗口去重: 超过 oldest_article 天的跳过
-                if pub:
-                    pdt = datetime(*pub[:6], tzinfo=timezone.utc)
-                    age = (now - pdt).total_seconds() / 86400
-                    if age > self.oldest_article:
+            head = raw[:200].lower()
+            if b'<rss' in head or b'<?xml' in head or b'<feed' in head:
+                # ---- 路径A: 标准 RSS ----
+                d = feedparser_parse(raw)
+                entries = []
+                for e in d.entries:
+                    _title = e.get('title', '') or ''
+                    _raw = ''
+                    if e.get('content'):
+                        _raw = e['content'][0].get('value', '') or ''
+                    elif e.get('description'):
+                        _raw = e['description']
+                    if ('Telegram' in _title) or ('tgme_page' in _raw):
                         continue
-                    dt = pdt.astimezone(CST)
-                    time_str = dt.strftime('%H:%M:%S')
-                else:
-                    time_str = '??:??:??'
-                content = ''
-                if e.get('content'):
-                    content = e['content'][0].get('value', '')
-                elif e.get('description'):
-                    content = e['description']
-                elif e.get('summary'):
-                    content = e['summary']
-                body = self._clean(content) if content else '<p></p>'
-                entries.append({
-                    'title': time_str,
-                    'url': e.get('link', '') or 'https://t.me/s/jin10data',
-                    'content': body,
-                })
-            articles.append((feed_title, entries))
+                    pub = e.get('published_parsed') or e.get('updated_parsed')
+                    if pub:
+                        pdt = datetime(*pub[:6], tzinfo=timezone.utc)
+                        if (now - pdt).total_seconds() / 86400 > self.oldest_article:
+                            continue
+                        time_str = pdt.astimezone(CST).strftime('%H:%M:%S')
+                    else:
+                        time_str = '??:??:??'
+                    content = ''
+                    if e.get('content'):
+                        content = e['content'][0].get('value', '')
+                    elif e.get('description'):
+                        content = e['description']
+                    elif e.get('summary'):
+                        content = e['summary']
+                    body = self._clean(content) if content else '<p></p>'
+                    entries.append({
+                        'title': time_str,
+                        'url': e.get('link', '') or 'https://t.me/s/jin10data',
+                        'content': body,
+                    })
+                self.log.warn('JIN10 format=RSS entries=%d' % len(entries))
+                articles.append((feed_title, entries))
+            else:
+                # ---- 路径B: 整页 HTML 兜底 ----
+                items = self._parse_html(raw)
+                entries = []
+                for ts, body in items:
+                    tstr = '??:??:??'
+                    if ts:
+                        m = re.search(r'(\d{1,2})[:T-](\d{1,2})', ts)
+                        if m:
+                            tstr = '%02d:%02d:00' % (int(m.group(1)), int(m.group(2)))
+                    entries.append({
+                        'title': tstr,
+                        'url': 'https://t.me/s/jin10data',
+                        'content': '<p>' + body + '</p>',
+                    })
+                self.log.warn('JIN10 format=HTML items=%d' % len(entries))
+                articles.append((feed_title, entries))
         return articles
