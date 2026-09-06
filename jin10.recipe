@@ -1,0 +1,97 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""
+金十数据 - Telegram 频道 (jin10data) 快讯
+源: https://my-tg-rss.ask-linsh.workers.dev/jin10data  (Telegram -> RSS worker, 用户自建)
+特点: 几分钟一条, description 里正文会重复两次(纯文本段 + <b>完整段),
+      带 telegram emoji 外链图片、<i class="emoji">、末尾 t.me 链接。
+排版: 每条快讯做成一章, 标题用北京时间 HH:MM:SS; 正文清理重复/去 emoji/去 t.me 链接。
+"""
+from calibre.web.feeds.recipes import BasicNewsRecipe
+from calibre.ebooks.BeautifulSoup import BeautifulSoup
+from datetime import datetime, timezone, timedelta
+
+CST = timezone(timedelta(hours=8))
+
+
+class Jin10Data(BasicNewsRecipe):
+    title = '金十数据'
+    __author__ = 'lili'
+    description = '金十数据 Telegram 频道快讯（几分钟一条）'
+    language = 'zh'
+    encoding = 'utf-8'
+
+    # 金十一天数百条, 取最近 N 条即可 (想看全天就调大)
+    max_articles_per_feed = 80
+    no_stylesheets = True
+    remove_javascript = True
+    remove_empty_feeds = True
+    resolve_internal_links = True
+
+    feeds = [('金十数据', 'https://my-tg-rss.ask-linsh.workers.dev/jin10data')]
+
+    # ---------- 正文清理 ----------
+    def _clean(self, html):
+        soup = BeautifulSoup(html)
+        for img in soup.find_all('img'):          # telegram emoji 外链图
+            img.decompose()
+        for a in soup.find_all('a'):              # 末尾 t.me 链接
+            a.decompose()
+        for i in soup.find_all('i', class_='emoji'):
+            i.decompose()
+        bs = soup.find_all('b')
+        if bs:
+            # t.me RSS 修复版: 纯文本段(常截断) + <b>完整段, 取最后的 <b>
+            return '<p>' + str(bs[-1]) + '</p>'
+        txt = soup.get_text(' ', strip=True)       # 无加粗: 直接去重
+        return '<p>' + self._dedupe(txt) + '</p>'
+
+    @staticmethod
+    def _dedupe(text):
+        text = text.strip()
+        n = len(text)
+        for h in range(1, n // 2 + 1):            # 整段重复 (如 "xxx xxx")
+            if n % h == 0 and text == text[:h] * (n // h):
+                return text[:h]
+        lines = [l.strip() for l in text.split('\n') if l.strip()]
+        seen, out = set(), []
+        for l in lines:                            # 按行去重保序
+            if l not in seen:
+                seen.add(l)
+                out.append(l)
+        return '\n'.join(out)
+
+    # ---------- 抓取并组织 ----------
+    def parse_index(self):
+        from calibre.web.feeds.feedparser import parse as feedparser_parse
+        articles = []
+        for feed_title, url in self.feeds:
+            try:
+                raw = self.browser.open(url).read()
+            except Exception as e:
+                self.log.warn('抓取失败: %s' % e)
+                continue
+            d = feedparser_parse(raw)
+            entries = []
+            for e in d.entries[:self.max_articles_per_feed]:
+                pub = e.get('published_parsed') or e.get('updated_parsed')
+                if pub:
+                    dt = datetime(*pub[:6], tzinfo=timezone.utc).astimezone(CST)
+                    time_str = dt.strftime('%H:%M:%S')
+                else:
+                    time_str = '??:??:??'
+                content = ''
+                if e.get('content'):
+                    content = e['content'][0].get('value', '')
+                elif e.get('description'):
+                    content = e['description']
+                elif e.get('summary'):
+                    content = e['summary']
+                body = self._clean(content) if content else '<p></p>'
+                entries.append({
+                    'title': time_str,
+                    'url': e.get('link', '') or 'https://t.me/s/jin10data',
+                    'content': body,
+                })
+            articles.append((feed_title, entries))
+        return articles
