@@ -1,34 +1,32 @@
-name: Debug RSS
-on: workflow_dispatch
+name: Debug Feed
+
+on:
+  workflow_dispatch:
+
 jobs:
-  worker:
+  probe:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - name: Debug fetch
+      - name: Curl n8n webhook from GitHub runner
         run: |
-          URL="https://my-tg-rss.ask-linsh.workers.dev/jin10data"
-          echo "=== curl (default UA) head ==="
-          curl -sL --max-time 25 "$URL" -o /tmp/j.xml -w "HTTP:%{http_code} SIZE:%{size_download}\n"
-          head -c 400 /tmp/j.xml; echo
-          echo "=== item count (curl) ==="
-          grep -c "<item" /tmp/j.xml || true
-          echo "=== first <item> description (curl) ==="
-          grep -o "<description>[^<]*</description>" /tmp/j.xml | head -2
-          echo "=== python urllib browser-UA ==="
+          echo "=== HEAD ==="
+          curl -sI --max-time 60 "https://n8n.nbhub.xyz/webhook/jin10" | head -12
+          echo "=== BODY ==="
+          curl -sL --max-time 60 "https://n8n.nbhub.xyz/webhook/jin10" -o /tmp/f.xml -w "HTTP:%{http_code} SIZE:%{size_download}\n"
+          head -c 700 /tmp/f.xml
+          echo
+          echo "=== counts ==="
+          grep -c "<item>" /tmp/f.xml || echo "no item"
+          echo "=== python parse ==="
           python3 - <<'PY'
-          import urllib.request, re
-          UA=('Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 '
-              '(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36')
-          req=urllib.request.Request("https://my-tg-rss.ask-linsh.workers.dev/jin10data", headers={'User-Agent':UA})
-          raw=urllib.request.urlopen(req, timeout=30).read()
-          print("SIZE", len(raw))
-          print("HEAD:", raw[:200])
-          print("item count:", raw.count(b"<item"))
-          # 第一个 item 的 description
-          m=re.search(rb"<item>(.*?)</item>", raw, re.S)
-          if m:
-              it=m.group(1)
-              d=re.search(rb"<description>(.*?)</description>", it, re.S)
-              print("DESC1:", (d.group(1)[:300] if d else "NO DESC")[:300])
+          import xml.etree.ElementTree as ET
+          try:
+              t = ET.parse('/tmp/f.xml')
+              items = t.getroot().findall('.//item')
+              print("XML OK, items:", len(items))
+              for it in items[:3]:
+                  print("  title:", (it.findtext('title') or '')[:50])
+                  print("  pubDate:", it.findtext('pubDate'))
+          except Exception as e:
+              print("XML PARSE ERROR:", e)
           PY
