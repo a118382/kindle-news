@@ -74,6 +74,21 @@ class Jin10Data(BasicNewsRecipe):
             d = feedparser_parse(raw)
             entries = []
             for e in d.entries[:self.max_articles_per_feed]:
+                # 跳过 worker 把频道主页(t.me/s 封面页)误当成第一条 item 的情况
+                _link = (e.get('link') or '').rstrip('/')
+                _title = e.get('title', '') or ''
+                _raw = ''
+                if e.get('content'):
+                    _raw = e['content'][0].get('value', '') or ''
+                elif e.get('description'):
+                    _raw = e['description']
+                if ('Telegram' in _title
+                        or 'tgme_page' in _raw
+                        or 'subscribers' in _raw
+                        or 'Download Telegram' in _raw
+                        or _link in ('https://t.me/s/jin10data',
+                                     'https://my-tg-rss.ask-linsh.workers.dev/jin10data')):
+                    continue
                 pub = e.get('published_parsed') or e.get('updated_parsed')
                 if pub:
                     dt = datetime(*pub[:6], tzinfo=timezone.utc).astimezone(CST)
