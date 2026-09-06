@@ -1,0 +1,109 @@
+name: Calibre News Delivery
+
+on:
+  workflow_dispatch:
+    inputs:
+      format:
+        description: '输出格式（Kindle 原生只认 azw3 / mobi / pdf / txt）'
+        required: false
+        default: 'azw3'
+  schedule:
+    # 北京时间每天早上 6:00 = UTC 前一天 22:00
+    - cron: '0 22 * * *'
+
+permissions:
+  contents: write
+
+jobs:
+  worker:
+    runs-on: ubuntu-latest
+    env:
+      output: converted_ebooks
+      publisher: kindle-news
+      author: Calibre News Delivery
+      ext: ${{ github.event.inputs.format || 'azw3' }}
+      size: 25
+    steps:
+      - name: Install Calibre
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libegl1 libopengl0 libxcb-cursor0
+          wget -nv -O- https://download.calibre-ebook.com/linux-installer.sh | sudo sh /dev/stdin
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Collect Recipes
+        run: |
+          : > temp_recipe_list.txt
+          if [ -f recipe_list.txt ]; then
+            while read -r r || [ -n "$r" ]; do
+              [ -z "$r" ] && continue
+              case "$r" in \#*) continue ;; esac
+              title="${r%.recipe}"
+              if ebook-convert --list-recipes 2>/dev/null | grep -qx "$title"; then
+                [ "${r##*.}" = "recipe" ] || r="$r.recipe"
+                echo "$r" >> temp_recipe_list.txt
+              else
+                echo "Skip (not a built-in recipe): $r"
+              fi
+            done < recipe_list.txt
+          fi
+          find . -maxdepth 1 -type f -name '*.recipe' >> temp_recipe_list.txt
+          sort -u temp_recipe_list.txt -o temp_recipe_list.txt
+          echo "Recipe count: $(wc -l < temp_recipe_list.txt)"
+          if [ ! -s temp_recipe_list.txt ]; then
+            echo 'No recipe needs processing'; exit 1
+          fi
+
+      - name: Converting Ebook
+        run: |
+          mkdir -p "$output"
+          while read -r recipe_path || [ -n "$recipe_path" ]; do
+            ebook_name="$(basename "${recipe_path%.*}")"
+            ebook_path="$ebook_name.${ext,,}"
+            echo "Converting \"$recipe_path\" > \"$ebook_path\" ..."
+            args=(--authors="$author" --publisher="$publisher")
+            [ -f "covers/$ebook_name.png" ] && args+=(--cover="covers/$ebook_name.png")
+            [ -f "styles/$ebook_name.css" ] && args+=(--extra-css="styles/$ebook_name.css")
+            if ebook-convert "$recipe_path" "$ebook_path" "${args[@]}"; then
+              title=$(ebook-meta "$ebook_path" 2>/dev/null | sed -n 's/^Title *: *\(.*\)$/\1/p' | head -1)
+              [ -n "$title" ] || title="$ebook_name"
+              title=$(echo "$title" | tr -d '/\\:')
+              mv -f "$ebook_path" "$output/${title}.${ext,,}"
+              echo "OK: $title"
+            else
+              echo "FAILED: $recipe_path"
+            fi
+          done < temp_recipe_list.txt
+          count=$(find "$output" -type f -name "*.${ext,,}" | wc -l)
+          echo "Ebook count: $count"
+          if [ "$count" -eq 0 ]; then
+            echo 'No ebook was produced'; exit 1
+          fi
+
+      - name: Build Index
+        run: python3 scripts/make_index.py
+
+      - name: Publish to GitHub Pages
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          cd "$output"
+          git init -q .
+          git checkout -q -b gh-pages
+          git add -A
+          git -c user.name='github-actions[bot]' \
+              -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+              commit -q -m "Update ebooks $(date -u +%Y-%m-%dT%H:%M:%SZ)" || exit 1
+          git push -q --force \
+            "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+          echo "Published to gh-pages"
+
+      - name: Storing Ebook
+        if: ${{ success() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: kindle-news
+          path: ${{ env.output }}
+          retention-days: 30

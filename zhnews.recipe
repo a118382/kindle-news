@@ -1,0 +1,36 @@
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
+"""中文早报 - Calibre recipe
+
+放在仓库根目录，文件名必须以 .recipe 结尾，会被 workflow 自动拾取。
+改 feeds 即可换源。
+"""
+from calibre.web.feeds.recipes import BasicNewsRecipe
+
+
+class ZhongWenZaoBao(BasicNewsRecipe):
+    title = '中文早报'
+    __author__ = 'lili'
+    description = '中文资讯聚合，供 Kindle 阅读'
+    language = 'zh'
+    encoding = 'utf-8'
+
+    oldest_article = 1.5
+    max_articles_per_feed = 15
+    no_stylesheets = True
+    remove_javascript = True
+    remove_empty_feeds = True
+
+    feeds = [
+        ('少数派', 'https://sspai.com/feed'),
+        ('阮一峰的网络日志', 'https://www.ruanyifeng.com/blog/atom.xml'),
+    ]
+
+    def get_browser(self):
+        br = BasicNewsRecipe.get_browser(self)
+        br.addheaders = [(
+            'User-agent',
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+            '(KHTML, like Gecko) Chrome/120.0 Safari/537.36'
+        )]
+        return br

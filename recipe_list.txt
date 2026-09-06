@@ -1,0 +1,3 @@
+# 一行一个 Calibre 内置 recipe 名称（不含 .recipe 后缀）
+# 查看全部: ebook-convert --list-recipes
+Slashdot.org
