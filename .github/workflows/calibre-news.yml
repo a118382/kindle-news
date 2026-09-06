@@ -123,7 +123,8 @@ jobs:
       - name: Send to Kindle via Email
         # 可选：在仓库 Settings → Secrets 里填 FROM/TO/SMTP/PORT/ENCRYPT/SECRET 才启用
         # 美区(@kindle.com)账号的 Send to Kindle 邮件通道仍可用；FROM 必须是亚马逊后台「批准的电邮列表」里的完整邮箱
-        if: ${{ env.from != '' && env.to != '' && env.relay != '' && env.port != '' }}
+        # always()：即使前面的 Publish 步骤失败（如 gh-pages 推送保护拦截），邮件仍照常发出
+        if: ${{ always() && env.from != '' && env.to != '' && env.relay != '' && env.port != '' }}
         run: |
           if [ -z "$secret" ]; then echo "SECRET 未设置，跳过邮件发送"; exit 0; fi
           cd "$output"
