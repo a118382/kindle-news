@@ -23,6 +23,12 @@ jobs:
       author: Calibre News Delivery
       ext: ${{ github.event.inputs.format || 'azw3' }}
       size: 25
+      relay: ${{ secrets.SMTP }}
+      port: ${{ secrets.PORT }}
+      encrypt: ${{ secrets.ENCRYPT }}
+      secret: ${{ secrets.SECRET }}
+      from: ${{ secrets.FROM }}
+      to: ${{ secrets.TO }}
     steps:
       - name: Install Calibre
         run: |
@@ -102,6 +108,33 @@ jobs:
           git push -q --force \
             "https://x-access-token:${GITHUB_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
           echo "Published to gh-pages"
+
+      - name: Send to Kindle via Email
+        # 可选：在仓库 Settings → Secrets 里填 FROM/TO/SMTP/PORT/ENCRYPT/SECRET 才启用
+        # 美区(@kindle.com)账号的 Send to Kindle 邮件通道仍可用；FROM 必须是亚马逊后台「批准的电邮列表」里的完整邮箱
+        if: ${{ env.from != '' && env.to != '' && env.relay != '' && env.port != '' }}
+        run: |
+          if [ -z "$secret" ]; then echo "SECRET 未设置，跳过邮件发送"; exit 0; fi
+          cd "$output"
+          sent=0
+          find . -type f -name "*.${ext,,}" -print0 | while IFS= read -r -d '' f; do
+            base="$(basename "${f%.*}")"
+            echo "Sending \"$base\" -> $to ..."
+            if calibre-smtp \
+                 --username "$from" \
+                 --password "$secret" \
+                 --relay "$relay" \
+                 --port "$port" \
+                 ${encrypt:+--encryption "$encrypt"} \
+                 --subject "$base" \
+                 --attachment "$PWD/$f" \
+                 "$from" "$to" "$base"; then
+              echo "Sent: $base"
+            else
+              echo "FAILED: $base"
+            fi
+          done
+          echo "Email delivery done."
 
       - name: Storing Ebook
         if: ${{ success() }}
