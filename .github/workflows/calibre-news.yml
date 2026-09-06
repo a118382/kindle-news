@@ -81,6 +81,17 @@ jobs:
               title=$(echo "$title" | tr -d '/\\:')
               mv -f "$ebook_path" "$output/${title}.${ext,,}"
               echo "OK: $title"
+              # 邮件通道只收 epub/pdf/doc/txt/mobi 等需转换格式，
+              # azw3/kfx 这类 Kindle 原生格式会被亚马逊静默丢弃。
+              # 因此额外生成一份 epub 专供邮件推送（服务端自动转 azw3/kfx 下发）。
+              if [ "${ext,,}" != "epub" ]; then
+                echo "Converting \"$recipe_path\" > \"${title}.epub\" (for email) ..."
+                if ebook-convert "$recipe_path" "$output/${title}.epub" "${args[@]}"; then
+                  echo "OK(epub): $title"
+                else
+                  echo "FAILED(epub): $recipe_path"
+                fi
+              fi
             else
               echo "FAILED: $recipe_path"
             fi
@@ -116,10 +127,16 @@ jobs:
         run: |
           if [ -z "$secret" ]; then echo "SECRET 未设置，跳过邮件发送"; exit 0; fi
           cd "$output"
-          sent=0
-          find . -type f -name "*.${ext,,}" -print0 | while IFS= read -r -d '' f; do
+          # 邮件通道只支持 epub/pdf/doc/txt/mobi 等需转换格式，不支持 azw3/kfx。
+          # 必须发 epub，亚马逊服务端会自动转成 azw3/kfx 再下发到设备。
+          shopt -s nullglob
+          files=(*.epub)
+          if [ ${#files[@]} -eq 0 ]; then
+            echo "没有可用于邮件的 epub 文件，跳过"; exit 0
+          fi
+          for f in "${files[@]}"; do
             base="$(basename "${f%.*}")"
-            echo "Sending \"$base\" -> $to ..."
+            echo "Sending \"$base\" (epub) -> $to ..."
             if calibre-smtp \
                  --username "$from" \
                  --password "$secret" \
