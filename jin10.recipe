@@ -32,34 +32,12 @@ class Jin10Data(BasicNewsRecipe):
 
     # ---------- 正文清理 ----------
     def _clean(self, html):
-        soup = BeautifulSoup(html)
-        for img in soup.find_all('img'):          # telegram emoji 外链图
-            img.decompose()
-        for a in soup.find_all('a'):              # 末尾 t.me 链接
-            a.decompose()
-        for i in soup.find_all('i', class_='emoji'):
-            i.decompose()
-        bs = soup.find_all('b')
-        if bs:
-            # t.me RSS 修复版: 纯文本段(常截断) + <b>完整段, 取最后的 <b>
-            return '<p>' + str(bs[-1]) + '</p>'
-        txt = soup.get_text(' ', strip=True)       # 无加粗: 直接去重
-        return '<p>' + self._dedupe(txt) + '</p>'
-
-    @staticmethod
-    def _dedupe(text):
-        text = text.strip()
-        n = len(text)
-        for h in range(1, n // 2 + 1):            # 整段重复 (如 "xxx xxx")
-            if n % h == 0 and text == text[:h] * (n // h):
-                return text[:h]
-        lines = [l.strip() for l in text.split('\n') if l.strip()]
-        seen, out = set(), []
-        for l in lines:                            # 按行去重保序
-            if l not in seen:
-                seen.add(l)
-                out.append(l)
-        return '\n'.join(out)
+        # 源(Telegram RSS 修复版)返回的 description 已是干净纯文本快讯,
+        # 这里只做兜底清理并包成段落。
+        soup = BeautifulSoup(html or '')
+        for tag in soup.find_all(['img', 'a']):
+            tag.decompose()
+        return '<p>' + soup.get_text(' ', strip=True) + '</p>'
 
     # ---------- 抓取并组织 ----------
     def parse_index(self):
@@ -74,20 +52,16 @@ class Jin10Data(BasicNewsRecipe):
             d = feedparser_parse(raw)
             entries = []
             for e in d.entries[:self.max_articles_per_feed]:
-                # 跳过 worker 把频道主页(t.me/s 封面页)误当成第一条 item 的情况
-                _link = (e.get('link') or '').rstrip('/')
+                # 跳过频道封面主页 item(若存在): 其特征为标题含 "Telegram"
+                # 或 description 含 Telegram 网页特有的 tgme_page 标记。
+                # 注意: 本源所有快讯的 <link> 都是频道根 URL, 不能据此跳过。
                 _title = e.get('title', '') or ''
                 _raw = ''
                 if e.get('content'):
                     _raw = e['content'][0].get('value', '') or ''
                 elif e.get('description'):
                     _raw = e['description']
-                if ('Telegram' in _title
-                        or 'tgme_page' in _raw
-                        or 'subscribers' in _raw
-                        or 'Download Telegram' in _raw
-                        or _link in ('https://t.me/s/jin10data',
-                                     'https://my-tg-rss.ask-linsh.workers.dev/jin10data')):
+                if ('Telegram' in _title) or ('tgme_page' in _raw):
                     continue
                 pub = e.get('published_parsed') or e.get('updated_parsed')
                 if pub:
