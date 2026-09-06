@@ -4,13 +4,14 @@
 金十数据 Telegram 频道 (jin10data) 快讯
 源: https://my-tg-rss.ask-linsh.workers.dev/jin10data
 
-源格式不稳定 (取决于请求 UA):
-  - 有时返回标准 RSS (多条独立 <item>, 干净快讯)
-  - 有时返回整页 HTML (t.me/s 频道页, 所有快讯挤在 1 条里, 带「金十数据」前缀)
-本 recipe 双路径兼容, 且统一做两件事:
+源格式不稳定 (取决于请求 UA / 频道状态):
+  - 有时返回标准 RSS (多条独立 <item>, 单条快讯)
+  - 有时某条 <item> 的 description 是整页 t.me/s HTML (所有快讯挤在 1 条里)
+本 recipe 双路径兼容, 且统一做三件事:
   1. 时间窗口去重: 只取过去 oldest_article 天 (默认1天)。
      每天北京 06:00 跑 → 取 昨天06:00~今天06:00, 已发过的不重复。
   2. 去掉「金十数据X月X日讯」前缀及残留「金十数据」四字 (书名已改为「财经快讯」)。
+  3. 整页 HTML 拆成多条独立快讯, 避免几百条挤在一章。
 """
 import re
 import urllib.request
@@ -31,6 +32,8 @@ class Jin10Data(BasicNewsRecipe):
     language = 'zh'
     encoding = 'utf-8'
 
+    # 关键: 用 recipe 自己提供的 content, 别让 Calibre 重新抓 url 把整页 HTML 又抓回来
+    use_embedded_content = True
     oldest_article = 1            # 时间窗口去重: 只取过去24小时
     max_articles_per_feed = 300  # 一天数百条, 放宽上限避免截断
     no_stylesheets = True
@@ -53,7 +56,9 @@ class Jin10Data(BasicNewsRecipe):
         return text.strip()
 
     def _clean(self, html):
-        soup = BeautifulSoup(html or '')
+        if not html:
+            return '<p></p>'
+        soup = BeautifulSoup(html)
         for tag in soup.find_all(['img', 'a', 'i']):
             tag.decompose()
         text = soup.get_text(' ', strip=True)
@@ -61,15 +66,22 @@ class Jin10Data(BasicNewsRecipe):
         text = re.sub(r'\s{2,}', ' ', text).strip()
         return '<p>' + text + '</p>' if text else '<p></p>'
 
-    # ---------- 抓取 ----------
-    def _fetch(self, url):
-        req = urllib.request.Request(url, headers={'User-Agent': UA})
-        return urllib.request.urlopen(req, timeout=30).read()
+    @staticmethod
+    def _ts_to_str(ts):
+        """从 t.me 的 datetime / HH:MM 提取北京时间 HH:MM:SS 标题。"""
+        if not ts:
+            return ''
+        m = re.search(r'(\d{1,2})[:T-](\d{1,2})(?:[:T-](\d{1,2}))?', ts)
+        if m:
+            h, mi = int(m.group(1)), int(m.group(2))
+            s = int(m.group(3)) if m.group(3) else 0
+            return '%02d:%02d:%02d' % (h, mi, s)
+        return ''
 
-    def _parse_html(self, raw):
-        """整页 HTML 兜底: 提取每条快讯, 去「金十数据」前缀和 views/时间尾巴。"""
-        soup = BeautifulSoup(raw)
-        nodes = soup.select('.tgme_widget_message, article, [class*="message"]')
+    def _split_messages(self, html):
+        """把整页 t.me/s HTML 拆成 [(ts, body), ...] 多条快讯。"""
+        soup = BeautifulSoup(html)
+        nodes = soup.select('.tgme_widget_message, [class*="message"]')
         out = []
         if nodes:
             for n in nodes:
@@ -84,14 +96,25 @@ class Jin10Data(BasicNewsRecipe):
                 if body:
                     out.append((ts, body))
         else:
+            # 退化: 按「金十数据」/「【」切分, 兜底提取
             text = soup.get_text('\n', strip=True)
-            for seg in re.split(r'金十数据', text):
+            text = re.sub(r'.*?金十数据\s*@\w+', '', text, flags=re.S)
+            for seg in re.split(r'(?=金十数据\s*【|金十数据\s*\d{1,2}月|【)', text):
                 seg = re.sub(r'\d+\s*views?', '', seg)
                 seg = self._strip_prefix(seg)
                 seg = re.sub(r'\s{2,}', ' ', seg).strip()
                 if len(seg) > 10:
                     out.append(('', seg))
         return out
+
+    # ---------- 抓取 ----------
+    def _fetch(self, url):
+        req = urllib.request.Request(url, headers={'User-Agent': UA})
+        return urllib.request.urlopen(req, timeout=30).read()
+
+    def _parse_html(self, raw):
+        """整页 HTML 兜底 (整个源返回的是 HTML 而非 RSS)。"""
+        return self._split_messages(raw)
 
     # ---------- 抓取并组织 ----------
     def parse_index(self):
@@ -109,6 +132,7 @@ class Jin10Data(BasicNewsRecipe):
                 # ---- 路径A: 标准 RSS ----
                 d = feedparser_parse(raw)
                 entries = []
+                seen = set()
                 for e in d.entries:
                     _title = e.get('title', '') or ''
                     _raw = ''
@@ -119,13 +143,12 @@ class Jin10Data(BasicNewsRecipe):
                     if ('Telegram' in _title) or ('tgme_page' in _raw):
                         continue
                     pub = e.get('published_parsed') or e.get('updated_parsed')
+                    time_str = '??:??:??'
                     if pub:
                         pdt = datetime(*pub[:6], tzinfo=timezone.utc)
                         if (now - pdt).total_seconds() / 86400 > self.oldest_article:
                             continue
                         time_str = pdt.astimezone(CST).strftime('%H:%M:%S')
-                    else:
-                        time_str = '??:??:??'
                     content = ''
                     if e.get('content'):
                         content = e['content'][0].get('value', '')
@@ -133,29 +156,60 @@ class Jin10Data(BasicNewsRecipe):
                         content = e['description']
                     elif e.get('summary'):
                         content = e['summary']
-                    body = self._clean(content) if content else '<p></p>'
-                    entries.append({
-                        'title': time_str,
-                        'url': e.get('link', '') or 'https://t.me/s/jin10data',
-                        'content': body,
-                    })
-                self.log.warn('JIN10 format=RSS entries=%d' % len(entries))
+                    # 这条 item 是否是整页 HTML?
+                    is_bulk = bool(content) and ('<' in content) and (
+                        'tgme' in content.lower() or content.count('金十数据') > 1
+                        or 'Section menu' in content or 'views' in content)
+                    if is_bulk:
+                        for ts, body in self._split_messages(content):
+                            tstr = self._ts_to_str(ts) or time_str
+                            if not body:
+                                continue
+                            key = body[:20]
+                            if key in seen:
+                                continue
+                            seen.add(key)
+                            entries.append({
+                                'title': tstr,
+                                'url': 'https://t.me/s/jin10data',
+                                'content': '<p>' + body + '</p>',
+                            })
+                    else:
+                        body = self._clean(content) if content else '<p></p>'
+                        key = re.sub(r'<[^>]+>', '', body)[:20]
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        entries.append({
+                            'title': time_str,
+                            'url': e.get('link', '') or 'https://t.me/s/jin10data',
+                            'content': body,
+                        })
+                self.log.warn('JIN10 RSS entries=%d' % len(entries))
                 articles.append((feed_title, entries))
             else:
                 # ---- 路径B: 整页 HTML 兜底 ----
                 items = self._parse_html(raw)
                 entries = []
+                seen = set()
                 for ts, body in items:
-                    tstr = '??:??:??'
-                    if ts:
-                        m = re.search(r'(\d{1,2})[:T-](\d{1,2})', ts)
-                        if m:
-                            tstr = '%02d:%02d:00' % (int(m.group(1)), int(m.group(2)))
+                    if not body:
+                        continue
+                    key = body[:20]
+                    if key in seen:
+                        continue
+                    seen.add(key)
                     entries.append({
-                        'title': tstr,
+                        'title': self._ts_to_str(ts) or '??:??:??',
                         'url': 'https://t.me/s/jin10data',
                         'content': '<p>' + body + '</p>',
                     })
-                self.log.warn('JIN10 format=HTML items=%d' % len(entries))
+                self.log.warn('JIN10 HTML items=%d' % len(entries))
                 articles.append((feed_title, entries))
         return articles
+
+    # 顺手清掉每页 <title> 里残留的「金十数据 – Telegram」
+    def postprocess_html(self, soup, first_fetch=True):
+        if soup.title and '金十数据' in soup.title.get_text():
+            soup.title.string = '财经快讯'
+        return soup
