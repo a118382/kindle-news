@@ -1,0 +1,16 @@
+name: Debug RSS
+on:
+  workflow_dispatch:
+jobs:
+  d:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Fetch jin10 RSS raw
+        run: |
+          curl -sL --max-time 30 "https://my-tg-rss.ask-linsh.workers.dev/jin10data" -o /tmp/rss.xml -w "HTTP:%{http_code} SIZE:%{size_download}\n"
+          echo "=== item count ==="; grep -c "<item>" /tmp/rss.xml || true
+          echo "=== first 2 items raw ==="
+          awk '/<item>/{c++; if(c>2) exit} {if(c>=1) print}' /tmp/rss.xml | head -c 3500
+          echo
+          echo "=== channel description (first 800) ==="
+          awk '/<channel>/{f=1} f{print} /<\/channel>/{exit}' /tmp/rss.xml | head -c 800
